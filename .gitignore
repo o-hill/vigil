@@ -1,0 +1,19 @@
+# Rust build artifacts
+/target/
+
+# Editor and IDE
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment and secrets
+.env
+*.pem
+*.key
