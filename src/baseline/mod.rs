@@ -1,7 +1,47 @@
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+/// A pair of consecutive tool calls, used as a HashMap key.
+/// Serializes as `"first->second"` for JSON compatibility.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Bigram {
+    pub first: String,
+    pub second: String,
+}
+
+impl Bigram {
+    pub fn new(first: impl Into<String>, second: impl Into<String>) -> Self {
+        Self {
+            first: first.into(),
+            second: second.into(),
+        }
+    }
+}
+
+impl fmt::Display for Bigram {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}->{}", self.first, self.second)
+    }
+}
+
+impl Serialize for Bigram {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for Bigram {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        let (first, second) = s
+            .split_once("->")
+            .ok_or_else(|| serde::de::Error::custom("expected 'first->second' format"))?;
+        Ok(Bigram::new(first, second))
+    }
+}
 
 /// Behavioral profile built from historical events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,7 +54,7 @@ pub struct Baseline {
     pub tool_stats: HashMap<String, ToolStats>,
 
     /// Bigrams of consecutive tool calls.
-    pub bigrams: HashMap<(String, String), u64>,
+    pub bigrams: HashMap<Bigram, u64>,
 
     /// Resources the agent has accessed.
     pub known_resources: HashSet<String>,

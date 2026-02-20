@@ -1,3 +1,5 @@
+pub mod openclaw;
+
 use std::pin::Pin;
 
 use futures_core::Stream;
