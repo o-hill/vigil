@@ -11,7 +11,8 @@ Guidelines for AI agents contributing to this repository.
 ## Dependencies
 
 - **Always check that dependencies are the latest stable version** before adding them. Don't copy stale version numbers from training data or prior context — verify against crates.io.
-- Justify new dependencies. Prefer the standard library when it's sufficient.
+- Minimize dependencies. Prefer the standard library or manual implementations when the added complexity is small. Every dependency is a maintenance and supply-chain burden.
+- Justify new dependencies. If a crate saves significant complexity, use it — but don't add one to avoid writing ten lines of code.
 
 ## Rust Conventions
 

@@ -7,3 +7,7 @@ license = "MIT"
 repository = "https://github.com/o-hill/vigil"
 
 [dependencies]
+chrono = { version = "0.4.43", features = ["serde"] }
+futures-core = "0.3.32"
+serde = { version = "1.0.228", features = ["derive"] }
+tokio = { version = "1.49.0", features = ["full"] }
