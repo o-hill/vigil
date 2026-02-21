@@ -183,9 +183,10 @@ fn run_baseline_build(
             }
         });
 
-        builder.process(&event);
-        pending_events.entry(agent_id).or_default().push(event);
-        line_count += 1;
+        if builder.process(&event) {
+            pending_events.entry(agent_id).or_default().push(event);
+            line_count += 1;
+        }
     }
 
     if builders.is_empty() {

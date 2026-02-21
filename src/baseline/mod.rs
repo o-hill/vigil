@@ -72,6 +72,10 @@ pub struct Baseline {
 
     pub first_seen: DateTime<Utc>,
     pub last_updated: DateTime<Utc>,
+
+    /// Per-session high-water mark for deduplication.
+    /// Maps session_id to the last processed sequence_position.
+    pub processed_through: HashMap<String, u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,6 +155,7 @@ impl Baseline {
             rate_stats: StreamingStats::new(),
             first_seen: now,
             last_updated: now,
+            processed_through: HashMap::new(),
         }
     }
 }

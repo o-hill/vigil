@@ -36,7 +36,15 @@ impl BaselineBuilder {
     }
 
     /// Ingest a single event into the baseline.
-    pub fn process(&mut self, event: &BehavioralEvent) {
+    /// Returns `false` if the event was skipped as a duplicate.
+    pub fn process(&mut self, event: &BehavioralEvent) -> bool {
+        // 0. Dedup: skip events at or below the high-water mark for this session.
+        if let Some(&hwm) = self.baseline.processed_through.get(&event.session_id)
+            && event.sequence_position <= hwm
+        {
+            return false;
+        }
+
         // 1. Handle session boundary.
         let session_changed = match &self.current_session_id {
             Some(current) => current != &event.session_id,
@@ -118,6 +126,18 @@ impl BaselineBuilder {
             self.last_tool_call = Some(tool_name.to_string());
             self.last_tool_call_time = Some(event.timestamp);
         }
+
+        // Update high-water mark.
+        let hwm = self
+            .baseline
+            .processed_through
+            .entry(event.session_id.clone())
+            .or_insert(0);
+        if event.sequence_position > *hwm {
+            *hwm = event.sequence_position;
+        }
+
+        true
     }
 
     /// Borrow the baseline for inspection.
@@ -140,11 +160,12 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
-    fn make_event(
+    fn make_event_at(
         event_type: EventType,
         tool_name: Option<&str>,
         session_id: &str,
         timestamp: DateTime<Utc>,
+        seq: u32,
     ) -> BehavioralEvent {
         BehavioralEvent {
             timestamp,
@@ -158,8 +179,20 @@ mod tests {
             data_out_bytes: 0,
             duration_ms: 0,
             token_count: None,
-            sequence_position: 0,
+            sequence_position: seq,
         }
+    }
+
+    fn make_event(
+        event_type: EventType,
+        tool_name: Option<&str>,
+        session_id: &str,
+        timestamp: DateTime<Utc>,
+    ) -> BehavioralEvent {
+        // Use unique sequence positions by hashing the timestamp minute
+        // so multi-event tests don't self-dedup.
+        let seq = (timestamp.minute() * 60 + timestamp.second()) + timestamp.hour() * 3600;
+        make_event_at(event_type, tool_name, session_id, timestamp, seq)
     }
 
     fn ts(hour: u32, minute: u32, second: u32) -> DateTime<Utc> {
@@ -464,5 +497,60 @@ mod tests {
         assert_eq!(b.hourly_distribution[10], 2);
         assert_eq!(b.hourly_distribution[14], 1);
         assert_eq!(b.hourly_distribution[0], 0);
+    }
+
+    #[test]
+    fn duplicates_skipped_on_replay() {
+        let mut builder = BaselineBuilder::new("agent-1");
+
+        let e1 = make_event_at(EventType::ToolCall, Some("read"), "s1", ts(10, 0, 0), 1);
+        let e2 = make_event_at(EventType::ToolCall, Some("write"), "s1", ts(10, 1, 0), 2);
+
+        assert!(builder.process(&e1));
+        assert!(builder.process(&e2));
+        assert_eq!(builder.baseline().event_count, 2);
+
+        // Replay the same events — should be skipped.
+        assert!(!builder.process(&e1));
+        assert!(!builder.process(&e2));
+        assert_eq!(builder.baseline().event_count, 2);
+    }
+
+    #[test]
+    fn duplicates_skipped_after_resume() {
+        let mut builder = BaselineBuilder::new("agent-1");
+
+        let e1 = make_event_at(EventType::ToolCall, Some("read"), "s1", ts(10, 0, 0), 1);
+        let e2 = make_event_at(EventType::ToolCall, Some("write"), "s1", ts(10, 1, 0), 2);
+
+        builder.process(&e1);
+        builder.process(&e2);
+        let baseline = builder.finish();
+        assert_eq!(baseline.event_count, 2);
+
+        // Resume from persisted baseline, replay same events.
+        let mut builder2 = BaselineBuilder::from_baseline(baseline);
+        assert!(!builder2.process(&e1));
+        assert!(!builder2.process(&e2));
+
+        // New event in same session passes through.
+        let e3 = make_event_at(EventType::ToolCall, Some("exec"), "s1", ts(10, 2, 0), 3);
+        assert!(builder2.process(&e3));
+
+        let baseline2 = builder2.finish();
+        assert_eq!(baseline2.event_count, 3);
+    }
+
+    #[test]
+    fn dedup_is_per_session() {
+        let mut builder = BaselineBuilder::new("agent-1");
+
+        let e1 = make_event_at(EventType::ToolCall, Some("read"), "s1", ts(10, 0, 0), 1);
+        let e2 = make_event_at(EventType::ToolCall, Some("read"), "s2", ts(11, 0, 0), 1);
+
+        // Same sequence_position but different sessions — both should process.
+        assert!(builder.process(&e1));
+        assert!(builder.process(&e2));
+        assert_eq!(builder.baseline().event_count, 2);
     }
 }
