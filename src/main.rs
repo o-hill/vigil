@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand};
 use vigil::baseline::builder::BaselineBuilder;
 use vigil::event::BehavioralEvent;
 use vigil::source::openclaw::OpenClawParser;
+use vigil::store::{FileStore, Store};
 
 #[derive(Parser)]
 #[command(name = "vigil", about = "Behavioral anomaly detection for AI agents")]
@@ -51,6 +52,11 @@ enum BaselineCommand {
         /// Only build a baseline for this agent ID (default: all agents).
         #[arg(long)]
         agent_id: Option<String>,
+
+        /// Storage directory for baselines and events.
+        /// Defaults to ~/.vigil/
+        #[arg(long)]
+        store: Option<PathBuf>,
     },
 }
 
@@ -67,8 +73,8 @@ fn main() {
             }
         },
         Command::Baseline { command } => match command {
-            BaselineCommand::Build { agent_id } => {
-                if let Err(e) = run_baseline_build(agent_id.as_deref()) {
+            BaselineCommand::Build { agent_id, store } => {
+                if let Err(e) = run_baseline_build(agent_id.as_deref(), store) {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 }
@@ -124,11 +130,20 @@ fn run_parse(path: Option<PathBuf>, agent_id: &str) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-fn run_baseline_build(filter_agent_id: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+fn run_baseline_build(
+    filter_agent_id: Option<&str>,
+    store_path: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = match store_path {
+        Some(path) => FileStore::new(path),
+        None => FileStore::default_location()?,
+    };
+
     let stdin = io::stdin();
     let reader = stdin.lock();
 
     let mut builders: HashMap<String, BaselineBuilder> = HashMap::new();
+    let mut pending_events: HashMap<String, Vec<BehavioralEvent>> = HashMap::new();
     let mut line_count: u64 = 0;
     let mut skipped: u64 = 0;
 
@@ -153,11 +168,23 @@ fn run_baseline_build(filter_agent_id: Option<&str>) -> Result<(), Box<dyn std::
             continue;
         }
 
-        let builder = builders
-            .entry(event.agent_id.clone())
-            .or_insert_with(|| BaselineBuilder::new(&event.agent_id));
+        let agent_id = event.agent_id.clone();
+        let builder = builders.entry(agent_id.clone()).or_insert_with(|| {
+            match store.load_baseline(&agent_id) {
+                Ok(Some(existing)) => {
+                    eprintln!("resuming baseline for {agent_id}");
+                    BaselineBuilder::from_baseline(existing)
+                }
+                Ok(None) => BaselineBuilder::new(&agent_id),
+                Err(e) => {
+                    eprintln!("warning: could not load baseline for {agent_id}: {e}");
+                    BaselineBuilder::new(&agent_id)
+                }
+            }
+        });
 
         builder.process(&event);
+        pending_events.entry(agent_id).or_default().push(event);
         line_count += 1;
     }
 
@@ -167,7 +194,15 @@ fn run_baseline_build(filter_agent_id: Option<&str>) -> Result<(), Box<dyn std::
     }
 
     for (agent_id, builder) in builders {
+        // Append events to store.
+        if let Some(events) = pending_events.remove(&agent_id) {
+            store.append_events(&agent_id, &events)?;
+        }
+
+        // Save updated baseline.
         let baseline = builder.finish();
+        store.save_baseline(&baseline)?;
+
         eprintln!("\n--- Baseline: {agent_id} ---");
         eprintln!("  sessions:  {}", baseline.session_count);
         eprintln!("  events:    {}", baseline.event_count);
@@ -184,9 +219,6 @@ fn run_baseline_build(filter_agent_id: Option<&str>) -> Result<(), Box<dyn std::
         for (tool, stats) in &baseline.tool_stats {
             eprintln!("  tool {tool}: {} calls", stats.call_count);
         }
-
-        // Output the baseline as JSON to stdout for downstream consumption.
-        println!("{}", serde_json::to_string(&baseline)?);
     }
 
     if skipped > 0 {
