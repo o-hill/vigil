@@ -1,3 +1,5 @@
+pub mod builder;
+
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
@@ -131,5 +133,24 @@ impl StreamingStats {
 impl Default for StreamingStats {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Baseline {
+    pub fn new(agent_id: impl Into<String>) -> Self {
+        let now = Utc::now();
+        Self {
+            agent_id: agent_id.into(),
+            session_count: 0,
+            event_count: 0,
+            tool_stats: HashMap::new(),
+            bigrams: HashMap::new(),
+            known_resources: HashSet::new(),
+            volume_stats: HashMap::new(),
+            hourly_distribution: [0; 24],
+            rate_stats: StreamingStats::new(),
+            first_seen: now,
+            last_updated: now,
+        }
     }
 }
