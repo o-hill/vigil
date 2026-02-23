@@ -396,6 +396,39 @@ mod tests {
     }
 
     #[test]
+    fn assistant_null_content() {
+        let mut parser = OpenClawParser::new("test-agent");
+        parser.parse_line(&session_line()).unwrap();
+
+        let line = r#"{"type":"message","id":"m1","parentId":null,"timestamp":"2026-02-20T10:00:00.000Z","message":{"role":"assistant","content":null,"usage":{"totalTokens":10},"timestamp":1771624609040}}"#;
+        let events = parser.parse_line(line).unwrap();
+        assert!(events.is_empty(), "null content should produce no events");
+    }
+
+    #[test]
+    fn session_line_without_id() {
+        let mut parser = OpenClawParser::new("test-agent");
+
+        // First set a known session_id.
+        parser.parse_line(&session_line()).unwrap();
+        assert_eq!(parser.session_id, "test-session-123");
+
+        // Session line without "id" field — session_id should stay unchanged.
+        let no_id_line =
+            r#"{"type":"session","version":3,"timestamp":"2026-02-20T12:00:00.000Z","cwd":"/tmp"}"#;
+        let events = parser.parse_line(no_id_line).unwrap();
+        assert!(events.is_empty());
+        assert_eq!(
+            parser.session_id, "test-session-123",
+            "session_id should remain unchanged when no id in session line"
+        );
+        assert_eq!(
+            parser.sequence_position, 0,
+            "sequence_position should reset"
+        );
+    }
+
+    #[test]
     fn bigram_serialization_roundtrips() {
         use crate::baseline::Bigram;
         use std::collections::HashMap;

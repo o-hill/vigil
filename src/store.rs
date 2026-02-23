@@ -252,6 +252,40 @@ mod tests {
     }
 
     #[test]
+    fn append_empty_slice() {
+        let store = temp_store();
+        store.append_events("agent-1", &[]).unwrap();
+
+        let events_path = store.events_path("agent-1");
+        // The file may or may not exist, but if it does, it should be empty.
+        if events_path.exists() {
+            let content = fs::read_to_string(&events_path).unwrap();
+            assert!(content.is_empty(), "empty slice should not write data");
+        }
+        // Either way, loading events should return empty vec.
+        let loaded = store.load_events("agent-1").unwrap();
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn list_agents_ignores_files() {
+        let store = temp_store();
+        // Create the root directory with a regular file (not a subdirectory).
+        fs::create_dir_all(&store.root).unwrap();
+        fs::write(store.root.join("not-a-dir.txt"), "hello").unwrap();
+
+        // Also create a real agent dir to verify it IS returned.
+        store.save_baseline(&make_baseline("real-agent")).unwrap();
+
+        let agents = store.list_agents().unwrap();
+        assert_eq!(agents, vec!["real-agent"]);
+        assert!(
+            !agents.contains(&"not-a-dir.txt".to_string()),
+            "regular files should be excluded from list_agents"
+        );
+    }
+
+    #[test]
     fn list_agents_empty_for_nonexistent_directory() {
         let store = FileStore::new(PathBuf::from("/tmp/vigil-nonexistent-dir-test"));
         let agents = store.list_agents().unwrap();

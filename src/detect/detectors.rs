@@ -422,6 +422,62 @@ mod tests {
     }
 
     #[test]
+    fn unknown_tool_ignores_non_toolcall() {
+        let detector = UnknownToolDetector;
+        let baseline = baseline_with_tools(&["read", "write"]);
+
+        let mut event = make_event("read", "s1", ts(10, 0, 0));
+        event.event_type = EventType::UserMessage;
+
+        let anomalies = detector.detect(&event, &baseline);
+        assert!(
+            anomalies.is_empty(),
+            "UserMessage should not trigger UnknownTool"
+        );
+    }
+
+    #[test]
+    fn volume_spike_no_history() {
+        let detector = VolumeSpikeDetector::new(3.0);
+        // Baseline has tool_stats for "read" but no volume_stats entry.
+        let baseline = baseline_with_tools(&["read"]);
+
+        let mut event = make_event("read", "s1", ts(10, 0, 0));
+        event.data_in_bytes = 100_000;
+
+        let anomalies = detector.detect(&event, &baseline);
+        assert!(
+            anomalies.is_empty(),
+            "no volume_stats should mean no anomaly"
+        );
+    }
+
+    #[test]
+    fn rate_spike_same_timestamp_skipped() {
+        let detector = RateSpikeDetector::new(3.0);
+
+        let mut baseline = baseline_with_tools(&["read"]);
+        baseline.rate_stats = StreamingStats::new();
+        for _ in 0..50 {
+            baseline.rate_stats.update(1.0);
+        }
+        for _ in 0..50 {
+            baseline.rate_stats.update(1.1);
+        }
+
+        // Two calls with identical timestamps → interval_minutes = 0 → skipped.
+        let e1 = make_event("read", "s1", ts(10, 0, 0));
+        let e2 = make_event("read", "s1", ts(10, 0, 0));
+
+        detector.detect(&e1, &baseline);
+        let anomalies = detector.detect(&e2, &baseline);
+        assert!(
+            anomalies.is_empty(),
+            "identical timestamps should produce no rate anomaly"
+        );
+    }
+
+    #[test]
     fn volume_spike_fires_for_extreme_volume() {
         let detector = VolumeSpikeDetector::new(3.0);
 

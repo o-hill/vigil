@@ -542,6 +542,57 @@ mod tests {
     }
 
     #[test]
+    fn finish_with_no_events() {
+        let builder = BaselineBuilder::new("agent-1");
+        let baseline = builder.finish();
+        assert_eq!(baseline.session_count, 0);
+        assert_eq!(baseline.event_count, 0);
+    }
+
+    #[test]
+    fn tool_call_with_no_tool_name() {
+        let mut builder = BaselineBuilder::new("agent-1");
+        let event = make_event_at(EventType::ToolCall, None, "s1", ts(10, 0, 0), 1);
+        builder.process(&event);
+
+        let b = builder.baseline();
+        assert!(
+            b.tool_stats.contains_key("unknown"),
+            "tool_name: None should be keyed as 'unknown'"
+        );
+        assert_eq!(b.tool_stats["unknown"].call_count, 1);
+    }
+
+    #[test]
+    fn non_tool_events_skip_bigrams_and_rate() {
+        let mut builder = BaselineBuilder::new("agent-1");
+
+        builder.process(&make_event_at(
+            EventType::UserMessage,
+            None,
+            "s1",
+            ts(10, 0, 0),
+            1,
+        ));
+        builder.process(&make_event_at(
+            EventType::AgentMessage,
+            None,
+            "s1",
+            ts(10, 1, 0),
+            2,
+        ));
+
+        let b = builder.baseline();
+        assert_eq!(b.event_count, 2);
+        assert!(b.bigrams.is_empty(), "no bigrams from non-tool events");
+        assert_eq!(b.rate_stats.count, 0, "no rate stats from non-tool events");
+        assert!(
+            b.tool_stats.is_empty(),
+            "no tool_stats from non-tool events"
+        );
+    }
+
+    #[test]
     fn dedup_is_per_session() {
         let mut builder = BaselineBuilder::new("agent-1");
 
