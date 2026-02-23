@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand};
 use vigil::baseline::Baseline;
 use vigil::baseline::builder::BaselineBuilder;
 use vigil::detect::default_detectors;
+use vigil::detect::ensemble::EnsembleScorer;
 use vigil::event::BehavioralEvent;
 use vigil::source::openclaw::OpenClawParser;
 use vigil::store::{FileStore, Store};
@@ -267,6 +268,7 @@ fn run_detect(
     };
 
     let detectors = default_detectors(threshold);
+    let ensemble = EnsembleScorer::default();
 
     let stdin = io::stdin();
     let reader = stdin.lock();
@@ -310,15 +312,28 @@ fn run_detect(
 
         event_count += 1;
 
+        // Collect all anomalies from individual detectors.
+        let mut event_anomalies = Vec::new();
         for detector in &detectors {
-            let anomalies = detector.detect(&event, baseline);
-            for anomaly in anomalies {
-                anomaly_count += 1;
-                *anomalies_by_type
-                    .entry(format!("{:?}", anomaly.anomaly_type))
-                    .or_insert(0) += 1;
-                println!("{}", serde_json::to_string(&anomaly)?);
-            }
+            event_anomalies.extend(detector.detect(&event, baseline));
+        }
+
+        // Output individual anomalies.
+        for anomaly in &event_anomalies {
+            anomaly_count += 1;
+            *anomalies_by_type
+                .entry(format!("{:?}", anomaly.anomaly_type))
+                .or_insert(0) += 1;
+            println!("{}", serde_json::to_string(anomaly)?);
+        }
+
+        // Ensemble scoring across all detectors for this event.
+        if let Some(ensemble_anomaly) = ensemble.score(&event_anomalies, &event) {
+            anomaly_count += 1;
+            *anomalies_by_type
+                .entry(format!("{:?}", ensemble_anomaly.anomaly_type))
+                .or_insert(0) += 1;
+            println!("{}", serde_json::to_string(&ensemble_anomaly)?);
         }
     }
 

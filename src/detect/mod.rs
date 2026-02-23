@@ -1,4 +1,5 @@
 pub mod detectors;
+pub mod ensemble;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -24,7 +25,7 @@ pub enum Severity {
     Critical,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AnomalyType {
     UnknownTool,
     UnknownSequence,
@@ -33,6 +34,10 @@ pub enum AnomalyType {
     RateSpike,
     TemporalAnomaly,
     UnknownParamPattern,
+    ReasoningLoop,
+    ErrorRetryLoop,
+    CombinedAnomaly,
+    EnsembleScore,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,5 +64,8 @@ pub fn default_detectors(threshold: f64) -> Vec<Box<dyn Detector>> {
         Box::new(detectors::UnknownSequenceDetector::new()),
         Box::new(detectors::RateSpikeDetector::new(threshold)),
         Box::new(detectors::VolumeSpikeDetector::new(threshold)),
+        Box::new(detectors::ReasoningLoopDetector::new(3, 10)),
+        Box::new(detectors::ErrorRetryDetector::new(2)),
+        Box::new(detectors::CombinedAnomalyDetector::new(threshold)),
     ]
 }
