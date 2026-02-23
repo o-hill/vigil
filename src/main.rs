@@ -5,7 +5,9 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+use vigil::baseline::Baseline;
 use vigil::baseline::builder::BaselineBuilder;
+use vigil::detect::default_detectors;
 use vigil::event::BehavioralEvent;
 use vigil::source::openclaw::OpenClawParser;
 use vigil::store::{FileStore, Store};
@@ -28,6 +30,21 @@ enum Command {
     Baseline {
         #[command(subcommand)]
         command: BaselineCommand,
+    },
+    /// Detect anomalies in events against a saved baseline.
+    Detect {
+        /// Only detect for this agent ID (default: all agents).
+        #[arg(long)]
+        agent_id: Option<String>,
+
+        /// Storage directory for baselines.
+        /// Defaults to ~/.vigil/
+        #[arg(long)]
+        store: Option<PathBuf>,
+
+        /// Z-score threshold for statistical detectors.
+        #[arg(long, default_value = "3.0")]
+        threshold: f64,
     },
 }
 
@@ -80,6 +97,16 @@ fn main() {
                 }
             }
         },
+        Command::Detect {
+            agent_id,
+            store,
+            threshold,
+        } => {
+            if let Err(e) = run_detect(agent_id.as_deref(), store, threshold) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
     }
 }
 
@@ -224,6 +251,82 @@ fn run_baseline_build(
 
     if skipped > 0 {
         eprintln!("\nskipped {skipped} unparseable line(s)");
+    }
+
+    Ok(())
+}
+
+fn run_detect(
+    filter_agent_id: Option<&str>,
+    store_path: Option<PathBuf>,
+    threshold: f64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = match store_path {
+        Some(path) => FileStore::new(path),
+        None => FileStore::default_location()?,
+    };
+
+    let detectors = default_detectors(threshold);
+
+    let stdin = io::stdin();
+    let reader = stdin.lock();
+
+    let mut baselines: HashMap<String, Baseline> = HashMap::new();
+    let mut event_count: u64 = 0;
+    let mut anomaly_count: u64 = 0;
+    let mut anomalies_by_type: HashMap<String, u64> = HashMap::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let event: BehavioralEvent = match serde_json::from_str(&line) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        if let Some(filter) = filter_agent_id
+            && event.agent_id != filter
+        {
+            continue;
+        }
+
+        // Load baseline for this agent (cached).
+        let baseline = match baselines.entry(event.agent_id.clone()) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                let agent_id = e.key();
+                match store.load_baseline(agent_id)? {
+                    Some(b) => e.insert(b),
+                    None => {
+                        eprintln!("warning: no baseline for agent {agent_id}, skipping");
+                        continue;
+                    }
+                }
+            }
+        };
+
+        event_count += 1;
+
+        for detector in &detectors {
+            let anomalies = detector.detect(&event, baseline);
+            for anomaly in anomalies {
+                anomaly_count += 1;
+                *anomalies_by_type
+                    .entry(format!("{:?}", anomaly.anomaly_type))
+                    .or_insert(0) += 1;
+                println!("{}", serde_json::to_string(&anomaly)?);
+            }
+        }
+    }
+
+    eprintln!("\n--- Detection Summary ---");
+    eprintln!("  events scanned: {event_count}");
+    eprintln!("  anomalies:      {anomaly_count}");
+    for (atype, count) in &anomalies_by_type {
+        eprintln!("    {atype}: {count}");
     }
 
     Ok(())

@@ -1,3 +1,5 @@
+pub mod detectors;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -48,4 +50,14 @@ pub struct Evidence {
 /// Individual anomaly detection strategy.
 pub trait Detector: Send + Sync {
     fn detect(&self, event: &BehavioralEvent, baseline: &Baseline) -> Vec<Anomaly>;
+}
+
+/// Returns the default set of detectors.
+pub fn default_detectors(threshold: f64) -> Vec<Box<dyn Detector>> {
+    vec![
+        Box::new(detectors::UnknownToolDetector),
+        Box::new(detectors::UnknownSequenceDetector::new()),
+        Box::new(detectors::RateSpikeDetector::new(threshold)),
+        Box::new(detectors::VolumeSpikeDetector::new(threshold)),
+    ]
 }
