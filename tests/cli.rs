@@ -443,3 +443,133 @@ fn detect_summary_on_stderr() {
         .success()
         .stderr(predicate::str::contains("Detection Summary"));
 }
+
+// ===========================================================================
+// vigil otel parse
+// ===========================================================================
+
+fn fixture_otlp_json() -> String {
+    r#"{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"abc123","spanId":"span1","name":"execute_tool","startTimeUnixNano":"1000000000","endTimeUnixNano":"2000000000","attributes":[{"key":"gen_ai.operation.name","value":{"stringValue":"execute_tool"}},{"key":"gen_ai.tool.name","value":{"stringValue":"read_file"}},{"key":"gen_ai.agent.name","value":{"stringValue":"my-agent"}}]},{"traceId":"abc123","spanId":"span2","name":"chat","startTimeUnixNano":"3000000000","endTimeUnixNano":"4000000000","attributes":[{"key":"gen_ai.operation.name","value":{"stringValue":"chat"}},{"key":"gen_ai.message.role","value":{"stringValue":"assistant"}},{"key":"gen_ai.usage.input_tokens","value":{"stringValue":"100"}},{"key":"gen_ai.usage.output_tokens","value":{"stringValue":"200"}}]}]}]}]}"#.to_string()
+}
+
+#[test]
+fn otel_parse_basic() {
+    let assert = vigil()
+        .args(["otel", "parse"])
+        .write_stdin(fixture_otlp_json())
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "should produce 2 events");
+
+    for line in &lines {
+        let v: serde_json::Value = serde_json::from_str(line).expect("each line should be JSON");
+        assert!(v.get("event_type").is_some());
+        assert!(v.get("trace_id").is_some());
+        assert_eq!(v["trace_id"].as_str().unwrap(), "abc123");
+    }
+}
+
+#[test]
+fn otel_parse_empty() {
+    vigil()
+        .args(["otel", "parse"])
+        .write_stdin(r#"{"resourceSpans":[]}"#)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("done: 0 events"));
+}
+
+#[test]
+fn otel_parse_invalid_json() {
+    vigil()
+        .args(["otel", "parse"])
+        .write_stdin("this is not json")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("error:"));
+}
+
+#[test]
+fn otel_parse_agent_id_flag() {
+    let otlp = r#"{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"t1","spanId":"s1","name":"tool","startTimeUnixNano":"1000000000","endTimeUnixNano":"2000000000","attributes":[{"key":"gen_ai.operation.name","value":{"stringValue":"execute_tool"}},{"key":"gen_ai.tool.name","value":{"stringValue":"search"}}]}]}]}]}"#;
+
+    let assert = vigil()
+        .args(["otel", "parse", "--agent-id", "custom-fallback"])
+        .write_stdin(otlp)
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let v: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+    assert_eq!(v["agent_id"].as_str().unwrap(), "custom-fallback");
+}
+
+// ===========================================================================
+// vigil detect --format otel
+// ===========================================================================
+
+#[test]
+fn detect_format_otel() {
+    let store_dir = temp_dir();
+
+    let agent_dir = store_dir.path().join("test-agent");
+    fs::create_dir_all(&agent_dir).unwrap();
+    fs::write(
+        agent_dir.join("baseline.json"),
+        make_baseline_json("test-agent", &["read_file"]),
+    )
+    .unwrap();
+
+    // Event with unknown tool to trigger anomaly.
+    let event = r#"{"timestamp":"2026-02-20T10:00:01.000Z","session_id":"sess-1","agent_id":"test-agent","event_type":"ToolCall","tool_name":"evil_exfiltrate","param_keys":[],"resource_ids":[],"data_in_bytes":0,"data_out_bytes":0,"duration_ms":0,"token_count":null,"sequence_position":1}"#;
+
+    let assert = vigil()
+        .args([
+            "detect",
+            "--store",
+            store_dir.path().to_str().unwrap(),
+            "--format",
+            "otel",
+        ])
+        .write_stdin(event)
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+
+    // Should be OTLP JSON, not JSONL.
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("output should be valid JSON");
+    assert!(parsed.get("resourceSpans").is_some());
+
+    // Should contain anomaly attributes.
+    assert!(stdout.contains("vigil.anomaly.type"));
+    assert!(stdout.contains("UnknownTool"));
+}
+
+// ===========================================================================
+// vigil export otel
+// ===========================================================================
+
+#[test]
+fn export_otel_from_stdin() {
+    // Create a minimal anomaly JSONL line.
+    let anomaly_json = r#"{"timestamp":"2026-02-20T10:00:01.000Z","severity":"High","anomaly_type":"UnknownTool","description":"unknown tool: evil","evidence":{"event":{"timestamp":"2026-02-20T10:00:01.000Z","session_id":"s1","agent_id":"test-agent","event_type":"ToolCall","tool_name":"evil","param_keys":[],"resource_ids":[],"data_in_bytes":0,"data_out_bytes":0,"duration_ms":0,"token_count":null,"sequence_position":1},"baseline_value":"known: [read]","observed_value":"evil","z_score":null,"confidence":0.95}}"#;
+
+    let assert = vigil()
+        .args(["export", "otel"])
+        .write_stdin(anomaly_json)
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("output should be valid OTLP JSON");
+    assert!(parsed.get("resourceSpans").is_some());
+    assert!(stdout.contains("vigil.anomaly.type"));
+    assert!(stdout.contains("UnknownTool"));
+    assert!(stdout.contains("vigil.agent_id"));
+}

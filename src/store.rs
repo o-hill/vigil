@@ -182,6 +182,10 @@ mod tests {
             duration_ms: 0,
             token_count: None,
             sequence_position: 0,
+            trace_id: None,
+            span_id: None,
+            provider: None,
+            model: None,
         }
     }
 

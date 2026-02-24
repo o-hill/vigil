@@ -1,4 +1,5 @@
 pub mod openclaw;
+pub mod otel;
 
 use std::pin::Pin;
 
@@ -21,4 +22,12 @@ pub trait EventSource: Send {
 
     /// Human-readable name for this source.
     fn name(&self) -> &str;
+}
+
+/// Heuristic: does this string look like a file path or URL?
+pub(crate) fn looks_like_resource(s: &str) -> bool {
+    s.starts_with('/')
+        || s.starts_with("~/")
+        || s.starts_with("http://")
+        || s.starts_with("https://")
 }

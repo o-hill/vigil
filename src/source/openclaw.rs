@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::looks_like_resource;
 use crate::event::{BehavioralEvent, EventType};
 
 /// Parses OpenClaw JSONL transcript lines into `BehavioralEvent`s.
@@ -37,6 +38,8 @@ struct RawMessage {
     usage: Option<RawUsage>,
     #[serde(rename = "isError")]
     is_error: Option<bool>,
+    provider: Option<String>,
+    model: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -108,6 +111,10 @@ impl OpenClawParser {
                     duration_ms: 0,
                     token_count: None,
                     sequence_position: self.sequence_position,
+                    trace_id: None,
+                    span_id: None,
+                    provider: None,
+                    model: None,
                 }])
             }
             "assistant" => self.parse_assistant_message(msg, timestamp),
@@ -138,6 +145,10 @@ impl OpenClawParser {
                     duration_ms: 0,
                     token_count: None,
                     sequence_position: self.sequence_position,
+                    trace_id: None,
+                    span_id: None,
+                    provider: None,
+                    model: None,
                 }])
             }
             _ => Ok(vec![]),
@@ -183,6 +194,10 @@ impl OpenClawParser {
                         duration_ms: 0,
                         token_count,
                         sequence_position: self.sequence_position,
+                        trace_id: None,
+                        span_id: None,
+                        provider: msg.provider.clone(),
+                        model: msg.model.clone(),
                     });
                 }
                 "text" => {
@@ -214,6 +229,10 @@ impl OpenClawParser {
                 duration_ms: 0,
                 token_count,
                 sequence_position: self.sequence_position,
+                trace_id: None,
+                span_id: None,
+                provider: msg.provider.clone(),
+                model: msg.model.clone(),
             });
         }
 
@@ -246,14 +265,6 @@ fn extract_argument_metadata(arguments: Option<&Value>) -> (Vec<String>, Vec<Str
     }
 
     (param_keys, resource_ids, data_in_bytes)
-}
-
-/// Heuristic: does this string look like a file path or URL?
-fn looks_like_resource(s: &str) -> bool {
-    s.starts_with('/')
-        || s.starts_with("~/")
-        || s.starts_with("http://")
-        || s.starts_with("https://")
 }
 
 #[cfg(test)]
@@ -387,6 +398,7 @@ mod tests {
 
     #[test]
     fn resource_extraction_heuristics() {
+        use super::looks_like_resource;
         assert!(looks_like_resource("/usr/bin/env"));
         assert!(looks_like_resource("~/Documents/file.txt"));
         assert!(looks_like_resource("https://example.com"));
