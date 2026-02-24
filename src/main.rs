@@ -1,15 +1,17 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, Read};
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
 use vigil::baseline::Baseline;
 use vigil::baseline::builder::BaselineBuilder;
-use vigil::detect::default_detectors;
+use vigil::detect::{Anomaly, default_detectors};
 use vigil::event::BehavioralEvent;
+use vigil::export::otel::anomalies_to_otlp;
 use vigil::source::openclaw::OpenClawParser;
+use vigil::source::otel::OtelParser;
 use vigil::store::{FileStore, Store};
 
 #[derive(Parser)]
@@ -25,6 +27,11 @@ enum Command {
     Openclaw {
         #[command(subcommand)]
         command: OpenclawCommand,
+    },
+    /// OpenTelemetry integration commands.
+    Otel {
+        #[command(subcommand)]
+        command: OtelCommand,
     },
     /// Baseline profiling commands.
     Baseline {
@@ -45,6 +52,15 @@ enum Command {
         /// Z-score threshold for statistical detectors.
         #[arg(long, default_value = "3.0")]
         threshold: f64,
+
+        /// Output format: "jsonl" (default) or "otel" (OTLP JSON).
+        #[arg(long, default_value = "jsonl")]
+        format: String,
+    },
+    /// Export data in various formats.
+    Export {
+        #[command(subcommand)]
+        command: ExportCommand,
     },
 }
 
@@ -58,6 +74,16 @@ enum OpenclawCommand {
 
         /// Agent ID to tag events with.
         #[arg(long, default_value = "openclaw")]
+        agent_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum OtelCommand {
+    /// Parse OTLP JSON from stdin and print extracted events as JSONL.
+    Parse {
+        /// Fallback agent ID when spans lack gen_ai.agent.name.
+        #[arg(long, default_value = "otel-agent")]
         agent_id: String,
     },
 }
@@ -77,6 +103,12 @@ enum BaselineCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum ExportCommand {
+    /// Convert anomaly JSONL from stdin to OTLP JSON on stdout.
+    Otel,
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -84,6 +116,14 @@ fn main() {
         Command::Openclaw { command } => match command {
             OpenclawCommand::Parse { path, agent_id } => {
                 if let Err(e) = run_parse(path, &agent_id) {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        },
+        Command::Otel { command } => match command {
+            OtelCommand::Parse { agent_id } => {
+                if let Err(e) = run_otel_parse(&agent_id) {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 }
@@ -101,12 +141,21 @@ fn main() {
             agent_id,
             store,
             threshold,
+            format,
         } => {
-            if let Err(e) = run_detect(agent_id.as_deref(), store, threshold) {
+            if let Err(e) = run_detect(agent_id.as_deref(), store, threshold, &format) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
         }
+        Command::Export { command } => match command {
+            ExportCommand::Otel => {
+                if let Err(e) = run_export_otel() {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        },
     }
 }
 
@@ -154,6 +203,26 @@ fn run_parse(path: Option<PathBuf>, agent_id: &str) -> Result<(), Box<dyn std::e
     }
 
     eprintln!("done: {total_events} events from {} file(s)", files.len());
+    Ok(())
+}
+
+fn run_otel_parse(agent_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input)?;
+
+    if input.trim().is_empty() {
+        eprintln!("no input");
+        return Ok(());
+    }
+
+    let parser = OtelParser::new(agent_id);
+    let events = parser.parse(&input)?;
+
+    for event in &events {
+        println!("{}", serde_json::to_string(event)?);
+    }
+
+    eprintln!("done: {} events", events.len());
     Ok(())
 }
 
@@ -260,6 +329,7 @@ fn run_detect(
     filter_agent_id: Option<&str>,
     store_path: Option<PathBuf>,
     threshold: f64,
+    format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = match store_path {
         Some(path) => FileStore::new(path),
@@ -275,6 +345,8 @@ fn run_detect(
     let mut event_count: u64 = 0;
     let mut anomaly_count: u64 = 0;
     let mut anomalies_by_type: HashMap<String, u64> = HashMap::new();
+    let mut all_anomalies: Vec<Anomaly> = Vec::new();
+    let otel_output = format == "otel";
 
     for line in reader.lines() {
         let line = line?;
@@ -317,9 +389,17 @@ fn run_detect(
                 *anomalies_by_type
                     .entry(format!("{:?}", anomaly.anomaly_type))
                     .or_insert(0) += 1;
-                println!("{}", serde_json::to_string(&anomaly)?);
+                if otel_output {
+                    all_anomalies.push(anomaly);
+                } else {
+                    println!("{}", serde_json::to_string(&anomaly)?);
+                }
             }
         }
+    }
+
+    if otel_output {
+        println!("{}", anomalies_to_otlp(&all_anomalies));
     }
 
     eprintln!("\n--- Detection Summary ---");
@@ -328,6 +408,32 @@ fn run_detect(
     for (atype, count) in &anomalies_by_type {
         eprintln!("    {atype}: {count}");
     }
+
+    Ok(())
+}
+
+fn run_export_otel() -> Result<(), Box<dyn std::error::Error>> {
+    let stdin = io::stdin();
+    let reader = stdin.lock();
+
+    let mut anomalies: Vec<Anomaly> = Vec::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        match serde_json::from_str::<Anomaly>(&line) {
+            Ok(anomaly) => anomalies.push(anomaly),
+            Err(e) => {
+                eprintln!("warning: skipping unparseable line: {e}");
+            }
+        }
+    }
+
+    println!("{}", anomalies_to_otlp(&anomalies));
+    eprintln!("done: {} anomalies exported", anomalies.len());
 
     Ok(())
 }
